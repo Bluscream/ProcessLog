@@ -4,21 +4,12 @@ using ProcessLog.Models;
 namespace ProcessLog.Services;
 
 /// <summary>
-/// Thread-safe RFC 4180-compliant CSV logger for process events.
+/// Thread-safe semicolon-delimited logger for process events.
+/// Skips empty fields to avoid consecutive separators.
 /// </summary>
 internal sealed class CsvLogger : IDisposable
 {
-    private static readonly string[] HeaderColumns =
-    [
-        "Timestamp",
-        "EventType",
-        "PID",
-        "ProcessName",
-        "ParentPID",
-        "ParentProcessName",
-        "CommandLine",
-        "ExitCode"
-    ];
+    private const char Sep = ';';
 
     private readonly StreamWriter _writer;
     private readonly object _writeLock = new();
@@ -34,35 +25,49 @@ internal sealed class CsvLogger : IDisposable
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        var fileExists = File.Exists(filePath) && new FileInfo(filePath).Length > 0;
-
         _writer = new StreamWriter(filePath, append: true, Encoding.UTF8)
         {
             AutoFlush = true
         };
-
-        if (!fileExists)
-            WriteHeaderRow();
     }
 
     /// <summary>
-    /// Appends a process event record as a CSV row.
+    /// Formats a process event record as a semicolon-delimited line,
+    /// skipping empty fields to avoid consecutive separators.
+    /// Format: datetime;+/-;process_name;pid;parent_pid;parent_name;command_line[;exit_code]
+    /// </summary>
+    public static string FormatEvent(ProcessEventRecord record)
+    {
+        var parts = new List<string>(8)
+        {
+            record.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+            record.EventType == ProcessEventType.Start ? "+" : "-",
+            record.ProcessName,
+            record.ProcessId.ToString()
+        };
+
+        // Parent info — only add non-empty fields
+        if (record.ParentProcessId > 0)
+            parts.Add(record.ParentProcessId.ToString());
+
+        if (!string.IsNullOrEmpty(record.ParentProcessName))
+            parts.Add(record.ParentProcessName);
+
+        if (!string.IsNullOrEmpty(record.CommandLine))
+            parts.Add(EscapeField(record.CommandLine));
+
+        if (record.ExitCode.HasValue)
+            parts.Add(record.ExitCode.Value.ToString());
+
+        return string.Join(Sep, parts);
+    }
+
+    /// <summary>
+    /// Appends a process event record as a formatted line.
     /// </summary>
     public void LogEvent(ProcessEventRecord record)
     {
-        var fields = new[]
-        {
-            record.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff"),
-            record.EventType.ToString(),
-            record.ProcessId.ToString(),
-            record.ProcessName,
-            record.ParentProcessId.ToString(),
-            record.ParentProcessName,
-            record.CommandLine,
-            record.ExitCode?.ToString() ?? string.Empty
-        };
-
-        var line = string.Join(",", fields.Select(EscapeCsvField));
+        var line = FormatEvent(record);
 
         lock (_writeLock)
         {
@@ -81,22 +86,16 @@ internal sealed class CsvLogger : IDisposable
         }
     }
 
-    private void WriteHeaderRow()
-    {
-        var line = string.Join(",", HeaderColumns);
-        _writer.WriteLine(line);
-    }
-
     /// <summary>
-    /// RFC 4180 CSV escaping: wraps fields in quotes if they contain
-    /// commas, double-quotes, or newlines. Doubles any internal quotes.
+    /// Escapes a field value: wraps in quotes if it contains the separator,
+    /// double-quotes, or newlines. Doubles any internal quotes.
     /// </summary>
-    private static string EscapeCsvField(string field)
+    private static string EscapeField(string field)
     {
         if (string.IsNullOrEmpty(field))
             return string.Empty;
 
-        if (field.Contains(',') || field.Contains('"') || field.Contains('\n') || field.Contains('\r'))
+        if (field.Contains(Sep) || field.Contains('"') || field.Contains('\n') || field.Contains('\r'))
             return $"\"{field.Replace("\"", "\"\"")}\"";
 
         return field;

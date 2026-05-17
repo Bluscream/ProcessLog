@@ -11,7 +11,7 @@ internal static class ConsoleHelper
 
     /// <summary>
     /// Writes a process event to the console with color coding.
-    /// Green for starts, red for exits.
+    /// Shows the full CSV-formatted line. Green for starts, red for exits.
     /// </summary>
     public static void WriteEvent(ProcessEventRecord record)
     {
@@ -22,11 +22,13 @@ internal static class ConsoleHelper
             _ => ConsoleColor.Gray
         };
 
+        var line = CsvLogger.FormatEvent(record);
+
         lock (ConsoleLock)
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = color;
-            Console.WriteLine(record.ToDisplayString());
+            Console.WriteLine(line);
             Console.ForegroundColor = prev;
         }
     }
