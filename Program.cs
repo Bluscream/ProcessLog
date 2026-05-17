@@ -57,7 +57,8 @@ ConsoleHelper.WriteInfo(@"
 ");
 
 using var logger = new CsvLogger(logPath);
-using var monitor = new ProcessMonitor(logger);
+using var processInfo = new ProcessInfoService();
+using var monitor = new ProcessMonitor(logger, processInfo);
 
 await monitor.RunAsync(cts.Token);
 

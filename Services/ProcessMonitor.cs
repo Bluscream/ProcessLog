@@ -10,7 +10,9 @@ namespace ProcessLog.Services;
 internal sealed class ProcessMonitor : IDisposable
 {
     private readonly CsvLogger _logger;
+    private readonly ProcessInfoService _processInfo;
     private readonly int _selfPid;
+    private readonly Timer _cacheTrimTimer;
     private ManagementEventWatcher? _startWatcher;
     private ManagementEventWatcher? _stopWatcher;
     private bool _disposed;
@@ -24,10 +26,15 @@ internal sealed class ProcessMonitor : IDisposable
     public long ExitCount => Interlocked.Read(ref _exitCount);
     public long ErrorCount => Interlocked.Read(ref _errorCount);
 
-    public ProcessMonitor(CsvLogger logger)
+    public ProcessMonitor(CsvLogger logger, ProcessInfoService processInfo)
     {
         _logger = logger;
+        _processInfo = processInfo;
         _selfPid = Environment.ProcessId;
+
+        // Trim stale cache entries every 5 minutes (processes that started but we never saw exit)
+        _cacheTrimTimer = new Timer(_ => _processInfo.TrimCache(TimeSpan.FromMinutes(10)),
+            null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
     }
 
     /// <summary>
@@ -72,7 +79,7 @@ internal sealed class ProcessMonitor : IDisposable
             {
                 try
                 {
-                    var commandLine = ProcessInfoService.GetCommandLine(processId);
+                    var commandLine = _processInfo.GetCommandLine(processId);
                     var parentName = ProcessInfoService.GetProcessName(parentId);
 
                     var record = new ProcessEventRecord
@@ -126,6 +133,9 @@ internal sealed class ProcessMonitor : IDisposable
                 {
                     var parentName = ProcessInfoService.GetProcessName(parentId);
 
+                    // Retrieve cached command line from the start event
+                    var commandLine = _processInfo.GetCachedCommandLine(processId);
+
                     var record = new ProcessEventRecord
                     {
                         Timestamp = timestamp,
@@ -134,6 +144,7 @@ internal sealed class ProcessMonitor : IDisposable
                         ProcessName = processName,
                         ParentProcessId = parentId,
                         ParentProcessName = parentName,
+                        CommandLine = commandLine,
                         ExitCode = exitCode
                     };
 
@@ -166,13 +177,16 @@ internal sealed class ProcessMonitor : IDisposable
     public void PrintStats()
     {
         ConsoleHelper.WriteInfo(
-            $"\nSession summary: {StartCount} starts, {ExitCount} exits, {ErrorCount} errors");
+            $"\nSession summary: {StartCount} starts, {ExitCount} exits, {ErrorCount} errors" +
+            $" (cache: {_processInfo.CacheSize} entries)");
     }
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
+
+        _cacheTrimTimer.Dispose();
 
         try { _startWatcher?.Stop(); } catch { }
         try { _stopWatcher?.Stop(); } catch { }
